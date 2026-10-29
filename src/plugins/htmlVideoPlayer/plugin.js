@@ -121,6 +121,8 @@ function enableNativeTrackSupport(mediaSource, track) {
 function requireHlsPlayer() {
     return import('hls.js').then(({ default: hls }) => {
         hls.DefaultConfig.lowLatencyMode = false;
+        // the ESM build does not bundle the transmuxer worker
+        hls.DefaultConfig.workerPath = `${appRouter.baseUrl()}/libraries/hls.worker.js`;
         hls.DefaultConfig.backBufferLength = Infinity;
         // deprecated with no viable replacement
         // eslint-disable-next-line @typescript-eslint/no-deprecated
