@@ -261,9 +261,12 @@ export function destroyFlvPlayer(instance) {
 
 // How long playback may sit without progress before it is treated as failed
 const HLS_STALL_TIMEOUT_MS = 30000;
+// Consecutive fragments that may be appended without showing up in the buffered ranges
+const HLS_MAX_DROPPED_FRAGMENTS = 3;
 
 export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
     let progressTimer = null;
+    let droppedFragments = 0;
 
     // TEST ONLY: verbose logging
     window.__hlsdbg = window.__hlsdbg || [];
@@ -285,7 +288,7 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
         return '[' + r.join(', ') + ']';
     };
     const elemState = () => `t=${elem.currentTime.toFixed(2)} paused=${elem.paused} ready=${elem.readyState} net=${elem.networkState} buffered=${bufferedStr()} err=${elem.error ? elem.error.code + ':' + elem.error.message : 'none'}`;
-    dbg('bind', 'worker=' + (hls.config.workerPath || 'none'), 'enableWorker=' + hls.config.enableWorker);
+    dbg('bind', 'hls.js=' + Hls.version, 'worker=' + (hls.config.workerPath || 'none'), 'enableWorker=' + hls.config.enableWorker);
     ['loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'waiting', 'stalled', 'suspend', 'seeking', 'seeked', 'error', 'pause', 'ended'].forEach(function (name) {
         elem.addEventListener(name, () => dbg('video', name, elemState()));
     });
@@ -329,6 +332,26 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                 reject = null;
             }
         });
+    });
+
+    // The browser can accept appended fragments and silently discard them
+    hls.on(Hls.Events.FRAG_BUFFERED, function (event, data) {
+        const frag = data.frag;
+        let covered = false;
+
+        for (let i = 0; i < elem.buffered.length; i++) {
+            if (elem.buffered.start(i) <= frag.start + 1 && elem.buffered.end(i) >= frag.start + Math.min(frag.duration, 1)) {
+                covered = true;
+                break;
+            }
+        }
+
+        droppedFragments = covered ? 0 : droppedFragments + 1;
+
+        if (droppedFragments >= HLS_MAX_DROPPED_FRAGMENTS) {
+            console.error('HLS fragments are being appended but not buffered, giving up');
+            failPlayback();
+        }
     });
 
     hls.on(Hls.Events.DESTROYING, function () {
