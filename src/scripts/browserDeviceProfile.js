@@ -700,8 +700,9 @@ export default function (options) {
     }
 
     if (canPlayHevc(videoTestElement, options)
-        && (browser.edgeChromium || browser.safari || browser.tizen || browser.web0s || (browser.chrome && (!browser.android || browser.versionMajor >= 105)) || (browser.opera && !browser.mobile) || (browser.firefox && browser.versionMajor >= 134))) {
+        && (browser.edgeChromium || browser.safari || browser.tizen || browser.web0s || (browser.chrome && (!browser.android || browser.versionMajor >= 105)) || (browser.opera && !browser.mobile) || (browser.firefox && !browser.osx && browser.versionMajor >= 134))) {
         // Chromium used to support HEVC on Android but not via MSE
+        // Firefox on macOS drops HEVC fragments that do not start with an IDR frame
         hlsInFmp4VideoCodecs.push('hevc');
     }
 
