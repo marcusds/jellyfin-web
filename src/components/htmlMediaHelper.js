@@ -244,11 +244,33 @@ export function destroyFlvPlayer(instance) {
 }
 
 const HLS_BUFFER_STALL_TIMEOUT_MS = 10000;
+const HLS_START_TIMEOUT_MS = 20000;
 
 export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
     let bufferStall = null;
+    let startTimeout = null;
+
+    function failPlayback() {
+        hls.destroy();
+
+        if (reject) {
+            reject(MediaError.MEDIA_DECODE_ERROR);
+            reject = null;
+        } else {
+            onErrorInternal(instance, MediaError.MEDIA_DECODE_ERROR);
+        }
+    }
 
     hls.on(HlsEvents.MANIFEST_PARSED, function () {
+        // The browser can accept the stream but never start decoding it, which hls.js does not report
+        startTimeout = setTimeout(function () {
+            if (elem.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+                console.error('HLS playback did not start, giving up');
+                failPlayback();
+            }
+        }, HLS_START_TIMEOUT_MS);
+        elem.addEventListener('playing', () => clearTimeout(startTimeout), { once: true });
+
         playWithPromise(elem, onErrorFn).then(resolve, function () {
             if (reject) {
                 reject();
@@ -256,6 +278,8 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
             }
         });
     });
+
+    hls.on(HlsEvents.DESTROYING, () => clearTimeout(startTimeout));
 
     hls.on(HlsEvents.ERROR, function (event, data) {
         console.error('HLS Error: Type: ' + data.type + ' Details: ' + (data.details || '') + ' Fatal: ' + (data.fatal || false));
@@ -268,15 +292,7 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                 bufferStall = { since: now, currentTime: elem.currentTime };
             } else if (now - bufferStall.since >= HLS_BUFFER_STALL_TIMEOUT_MS) {
                 console.error('HLS buffer is full but playback is not progressing, giving up');
-                hls.destroy();
-
-                if (reject) {
-                    reject(MediaError.MEDIA_DECODE_ERROR);
-                    reject = null;
-                } else {
-                    onErrorInternal(instance, MediaError.MEDIA_DECODE_ERROR);
-                }
-
+                failPlayback();
                 return;
             }
         }
