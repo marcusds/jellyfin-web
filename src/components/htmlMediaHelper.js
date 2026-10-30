@@ -243,7 +243,12 @@ export function destroyFlvPlayer(instance) {
     }
 }
 
+// Consecutive fragments that may be appended without showing up in the buffered ranges
+const HLS_MAX_DROPPED_FRAGMENTS = 3;
+
 export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
+    let droppedFragments = 0;
+
     hls.on(HlsEvents.MANIFEST_PARSED, function () {
         playWithPromise(elem, onErrorFn).then(resolve, function () {
             if (reject) {
@@ -251,6 +256,40 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                 reject = null;
             }
         });
+    });
+
+    // The browser can accept appended fragments and silently discard them
+    hls.on(HlsEvents.FRAG_BUFFERED, function (event, data) {
+        const frag = data.frag;
+
+        if (frag.type !== 'main' || frag.gap) {
+            return;
+        }
+
+        let covered = false;
+
+        for (let i = 0; i < elem.buffered.length; i++) {
+            if (elem.buffered.start(i) <= frag.start + 1 && elem.buffered.end(i) >= frag.start + Math.min(frag.duration, 1)) {
+                covered = true;
+                break;
+            }
+        }
+
+        droppedFragments = covered ? 0 : droppedFragments + 1;
+
+        if (droppedFragments >= HLS_MAX_DROPPED_FRAGMENTS) {
+            console.error('hls.js fragments are being appended but not buffered');
+
+            // Trigger failure differently depending on whether this is prior to start of playback, or after
+            hls.destroy();
+
+            if (reject) {
+                reject(MediaError.MEDIA_DECODE_ERROR);
+                reject = null;
+            } else {
+                onErrorInternal(instance, MediaError.MEDIA_DECODE_ERROR);
+            }
+        }
     });
 
     hls.on(HlsEvents.ERROR, function (event, data) {
