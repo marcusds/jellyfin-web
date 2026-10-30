@@ -54,8 +54,6 @@ function supportsFade() {
 function requireHlsPlayer(callback) {
     import('hls.js').then(({ default: hls }) => {
         hls.DefaultConfig.lowLatencyMode = false;
-        // the ESM build does not bundle the transmuxer worker
-        hls.DefaultConfig.workerPath = `${appRouter.baseUrl()}/libraries/hls.worker.js`;
         hls.DefaultConfig.backBufferLength = Infinity;
         hls.DefaultConfig.liveBackBufferLength = 90;
         window.Hls = hls;

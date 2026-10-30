@@ -259,15 +259,46 @@ export function destroyFlvPlayer(instance) {
     }
 }
 
-// How long playback may sit with a full buffer and no progress before it is treated as failed
-const HLS_BUFFER_STALL_TIMEOUT_MS = 10000;
-const HLS_START_TIMEOUT_MS = 20000;
+// How long playback may sit without progress before it is treated as failed
+const HLS_STALL_TIMEOUT_MS = 30000;
 
 export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
-    let bufferStall = null;
-    let startTimeout = null;
+    let progressTimer = null;
+
+    // TEST ONLY: verbose logging
+    window.__hlsdbg = window.__hlsdbg || [];
+    const dbg = (...args) => {
+        const line = '[hlsdbg ' + (performance.now() / 1000).toFixed(2) + 's] ' + args.join(' ');
+        window.__hlsdbg.push(line);
+        if (window.__hlsdbg.length > 5000) {
+            window.__hlsdbg.shift();
+        }
+        if (args[0] !== 'hls' && args[0] !== 'tick') {
+            console.warn(line);
+        }
+    };
+    const bufferedStr = () => {
+        const r = [];
+        for (let i = 0; i < elem.buffered.length; i++) {
+            r.push(elem.buffered.start(i).toFixed(2) + '-' + elem.buffered.end(i).toFixed(2));
+        }
+        return '[' + r.join(', ') + ']';
+    };
+    const elemState = () => `t=${elem.currentTime.toFixed(2)} paused=${elem.paused} ready=${elem.readyState} net=${elem.networkState} buffered=${bufferedStr()} err=${elem.error ? elem.error.code + ':' + elem.error.message : 'none'}`;
+    dbg('bind', 'worker=' + (hls.config.workerPath || 'none'), 'enableWorker=' + hls.config.enableWorker);
+    ['loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'waiting', 'stalled', 'suspend', 'seeking', 'seeked', 'error', 'pause', 'ended'].forEach(function (name) {
+        elem.addEventListener(name, () => dbg('video', name, elemState()));
+    });
+    [
+        'MEDIA_ATTACHED', 'MANIFEST_PARSED', 'LEVEL_LOADED', 'FRAG_LOADING', 'FRAG_LOADED', 'FRAG_PARSING_INIT_SEGMENT', 'FRAG_PARSED',
+        'BUFFER_CODECS', 'BUFFER_APPENDING', 'BUFFER_APPENDED', 'BUFFER_EOS', 'FRAG_BUFFERED', 'FRAG_CHANGED'
+    ].forEach(function (name) {
+        hls.on(Hls.Events[name], (event, data) => dbg('hls', name, data?.frag ? 'sn=' + data.frag.sn + ' start=' + data.frag.start?.toFixed(2) : '', data?.type || '', data?.codec || '', elemState()));
+    });
+    const tickTimer = setInterval(() => dbg('tick', elemState()), 2000);
 
     function failPlayback() {
+        dbg('FAIL', elemState());
         hls.destroy();
 
         if (reject) {
@@ -279,14 +310,18 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
     }
 
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
-        // The browser can accept the stream but never start decoding it, which hls.js does not report
-        startTimeout = setTimeout(function () {
-            if (elem.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
-                console.error('HLS playback did not start, giving up');
+        // The browser can accept segments but never play them, which hls.js does not report
+        let lastProgress = { at: Date.now(), time: elem.currentTime };
+        progressTimer = setInterval(function () {
+            const now = Date.now();
+
+            if (elem.paused || elem.ended || Math.abs(elem.currentTime - lastProgress.time) >= 0.1) {
+                lastProgress = { at: now, time: elem.currentTime };
+            } else if (now - lastProgress.at >= HLS_STALL_TIMEOUT_MS) {
+                console.error('HLS playback is not progressing, giving up');
                 failPlayback();
             }
-        }, HLS_START_TIMEOUT_MS);
-        elem.addEventListener('playing', () => clearTimeout(startTimeout), { once: true });
+        }, 1000);
 
         playWithPromise(elem, onErrorFn).then(resolve, function () {
             if (reject) {
@@ -296,23 +331,14 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
         });
     });
 
-    hls.on(Hls.Events.DESTROYING, () => clearTimeout(startTimeout));
+    hls.on(Hls.Events.DESTROYING, function () {
+        clearInterval(progressTimer);
+        clearInterval(tickTimer);
+    });
 
     hls.on(Hls.Events.ERROR, function (event, data) {
         console.error('HLS Error: Type: ' + data.type + ' Details: ' + (data.details || '') + ' Fatal: ' + (data.fatal || false));
-
-        // A full buffer is non-fatal in hls.js, but if playback is not progressing it hangs silently
-        if (data.details === Hls.ErrorDetails.BUFFER_FULL_ERROR && !elem.paused) {
-            const now = Date.now();
-
-            if (!bufferStall || Math.abs(elem.currentTime - bufferStall.currentTime) >= 1) {
-                bufferStall = { since: now, currentTime: elem.currentTime };
-            } else if (now - bufferStall.since >= HLS_BUFFER_STALL_TIMEOUT_MS) {
-                console.error('HLS buffer is full but playback is not progressing, giving up');
-                failPlayback();
-                return;
-            }
-        }
+        dbg('ERROR', data.details, 'fatal=' + data.fatal, data.error?.message || data.reason || '', elemState());
 
         // try to recover network error
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR
