@@ -259,7 +259,12 @@ export function destroyFlvPlayer(instance) {
     }
 }
 
+// How long playback may sit with a full buffer and no progress before it is treated as failed
+const HLS_BUFFER_STALL_TIMEOUT_MS = 10000;
+
 export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
+    let bufferStall = null;
+
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
         playWithPromise(elem, onErrorFn).then(resolve, function () {
             if (reject) {
@@ -271,6 +276,27 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
 
     hls.on(Hls.Events.ERROR, function (event, data) {
         console.error('HLS Error: Type: ' + data.type + ' Details: ' + (data.details || '') + ' Fatal: ' + (data.fatal || false));
+
+        // A full buffer is non-fatal in hls.js, but if playback is not progressing it hangs silently
+        if (data.details === Hls.ErrorDetails.BUFFER_FULL_ERROR && !elem.paused) {
+            const now = Date.now();
+
+            if (!bufferStall || Math.abs(elem.currentTime - bufferStall.currentTime) >= 1) {
+                bufferStall = { since: now, currentTime: elem.currentTime };
+            } else if (now - bufferStall.since >= HLS_BUFFER_STALL_TIMEOUT_MS) {
+                console.error('HLS buffer is full but playback is not progressing, giving up');
+                hls.destroy();
+
+                if (reject) {
+                    reject(MediaError.MEDIA_DECODE_ERROR);
+                    reject = null;
+                } else {
+                    onErrorInternal(instance, MediaError.MEDIA_DECODE_ERROR);
+                }
+
+                return;
+            }
+        }
 
         // try to recover network error
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR

@@ -4,6 +4,7 @@ import { MediaError } from 'types/mediaError';
 
 import browser from '../../scripts/browser';
 import { appHost } from '../../components/apphost';
+import { appRouter } from '../../components/router/appRouter';
 import * as htmlMediaHelper from '../../components/htmlMediaHelper';
 import profileBuilder from '../../scripts/browserDeviceProfile';
 import { getIncludeCorsCredentials } from '../../scripts/settings/webSettings';
@@ -51,8 +52,10 @@ function supportsFade() {
 }
 
 function requireHlsPlayer(callback) {
-    import('hls.js/dist/hls.js').then(({ default: hls }) => {
+    import('hls.js').then(({ default: hls }) => {
         hls.DefaultConfig.lowLatencyMode = false;
+        // the ESM build does not bundle the transmuxer worker
+        hls.DefaultConfig.workerPath = `${appRouter.baseUrl()}/libraries/hls.worker.js`;
         hls.DefaultConfig.backBufferLength = Infinity;
         hls.DefaultConfig.liveBackBufferLength = 90;
         window.Hls = hls;
